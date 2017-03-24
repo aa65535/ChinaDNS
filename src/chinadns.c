@@ -603,7 +603,7 @@ static int should_filter_query(ns_msg msg, int is_chn) {
   int rrnum, rrmax;
   void *r;
   rrmax = ns_msg_count(msg, ns_s_an);
-  printf("(%d) ", is_chn);
+  printf("(%s) ", is_chn ? "C" : "F");
   for (rrnum = 0; rrnum < rrmax; rrnum++) {
     if (local_ns_parserr(&msg, ns_s_an, rrnum, &rr)) {
       ERR("local_ns_parserr");
@@ -617,15 +617,9 @@ static int should_filter_query(ns_msg msg, int is_chn) {
       if (verbose)
         printf("%s, ", inet_ntoa(*(struct in_addr *)rd));
       if (test_ip_in_list(*(struct in_addr *)rd, &chnroute_list)) {
-        if (is_chn)
-          return 0;
-        else
-          return -1;
+        return is_chn ? 0 : -1;
       } else {
-        if (is_chn)
-          return 1;
-        else
-          return -1;
+        return is_chn ? 1 : -1;
       }
     } else if (type == ns_t_aaaa || type == ns_t_ptr) {
       // if we've got an IPv6 result or a PTR result, pass
@@ -724,12 +718,12 @@ static int resolve_ecs_addrs() {
   token = strtok(edns_client_ip, ",");
   while (token) {
     inet_aton(token, &ecs_list.ecs_addrs[i].addrs);
-    if (test_ip_in_list(ecs_list.ecs_addrs[i].addrs, &chnroute_list)) {
+    ecs_list.ecs_addrs[i].is_chn = test_ip_in_list(ecs_list.ecs_addrs[i].addrs,
+                                                   &chnroute_list);
+    if (ecs_list.ecs_addrs[i].is_chn) {
       has_chn = 1;
-      ecs_list.ecs_addrs[i].is_chn = 1;
     } else {
       has_foreign = 1;
-      ecs_list.ecs_addrs[i].is_chn = 0;
     }
     token = strtok(NULL, ",");
     i++;

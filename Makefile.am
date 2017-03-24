@@ -1,2 +1,2 @@
 SUBDIRS = src
-dist_data_DATA = iplist.txt chnroute.txt
+dist_data_DATA = chnroute.txt

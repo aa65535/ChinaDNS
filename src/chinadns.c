@@ -486,7 +486,12 @@ static void dns_handle_local() {
       return;
     }
     // Set Additional RRs count
-    (*(global_buf + 11))++;
+    if (*(global_buf + 11) == 1) {
+      if (((*(global_buf + len - 1)) | (*(global_buf + len - 2))) == 0)
+        len -= 11;
+    } else
+      (*(global_buf + 11))++;
+
     for (i = 0; i < ecs_list.entries; i++)
       send_request(src_addr, src_addrlen, ecs_list.ecs_addrs[i],
                    ns_msg_id(msg), len);
@@ -520,7 +525,7 @@ static void dns_handle_remote() {
     }
     if (check_result(global_buf, len)) {
       if (verbose)
-        printf("fake response\n");
+        printf("Fake, drop\n");
       return;
     }
     id_addr_t *id_addr = queue_lookup(query_id);
@@ -546,7 +551,7 @@ static void dns_handle_remote() {
       }
     } else {
       if (verbose)
-        printf("skip\n");
+        printf("miss\n");
     }
   }
   else
@@ -604,6 +609,8 @@ static int should_filter_query(ns_msg msg, int is_chn) {
   void *r;
   rrmax = ns_msg_count(msg, ns_s_an);
   printf("(%s) ", is_chn ? "C" : "F");
+  if (rrmax == 0)
+    printf("Empty, ");
   for (rrnum = 0; rrnum < rrmax; rrnum++) {
     if (local_ns_parserr(&msg, ns_s_an, rrnum, &rr)) {
       ERR("local_ns_parserr");
@@ -747,32 +754,35 @@ static void buffer_putuint16(char **buffer, uint16_t value) {
   *buffer += 2;
 }
 
-static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint32_t len) {
-  // Set Root
+static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint32_t mask) {
+  // Set Name: <Root>
   buffer_putuint8(&buf_ptr, 0);
-  // Set Type
+  // Set Type: OPT (41)
   buffer_putuint16(&buf_ptr, 41);
-  // Set RR_Class( At here it's udp payload size )
+  // Set UDP payload size: 4096
   buffer_putuint16(&buf_ptr, 4096);
-  // Set TTL( At here it's empty )
+  // Set Higher bits in extended RCODE: 0x00
+  buffer_putuint8(&buf_ptr, 0);
+  // Set EDNS0 version: 0
+  buffer_putuint8(&buf_ptr, 0);
+  // Set Z: 0x0000
   buffer_putuint16(&buf_ptr, 0);
-  buffer_putuint16(&buf_ptr, 0);
-  // Set RD_Length
+  // Set Data length: 12
   buffer_putuint16(&buf_ptr, 12);
   // Set RData
-  // The after things are in the example of Document <Client Subnet in DNS Requests>
-  size_t  addrl = (len + 7) / 8;
-  // Set Option-Code
+  // The after things are in the example of <Client Subnet in DNS Requests>
+  size_t addrl = (mask + 7) / 8;
+  // Set Option Code: CSUBNET - Client subnet (8)
   buffer_putuint16(&buf_ptr, 8);
-  // Set Option-Length
+  // Set Option Length
   buffer_putuint16(&buf_ptr, 4 + addrl);
-  // Set Family "1" means IPV4
+  // Set Family: IPv4 (1)
   buffer_putuint16(&buf_ptr, 1);
-  // Set SOURCE NETMASK
-  buffer_putuint8(&buf_ptr, len);
-  // Set SCOPE NETMASK
+  // Set Source Netmask
+  buffer_putuint8(&buf_ptr, mask);
+  // Set Scope Netmask: 0
   buffer_putuint8(&buf_ptr, 0);
-  // After is Address Information
+  // Set Client Subnet Information
   memcpy(buf_ptr, addr, addrl);
 }
 

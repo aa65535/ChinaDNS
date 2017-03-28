@@ -51,7 +51,6 @@ typedef struct {
   uint16_t old_id;
   struct sockaddr *addr;
   socklen_t addrlen;
-  int is_chn;
 } id_addr_t;
 
 typedef struct {
@@ -105,13 +104,13 @@ static void dns_handle_remote();
 static const char *hostname_from_question(ns_msg msg);
 static int should_filter_query(ns_msg msg, int is_chn);
 
-static void queue_add(id_addr_t id_addr);
-static id_addr_t *queue_lookup(uint16_t id);
-
-#define ID_ADDR_QUEUE_LEN 256
+#define ID_ADDR_QUEUE_LEN 128
 // use a queue instead of hash here since it's not long
 static id_addr_t id_addr_queue[ID_ADDR_QUEUE_LEN];
 static int id_addr_queue_pos = 0;
+
+static void queue_add(id_addr_t id_addr);
+static id_addr_t *queue_lookup(uint16_t id);
 
 #define DELAY_QUEUE_LEN 128
 static delay_buf_t delay_queue[DELAY_QUEUE_LEN];
@@ -442,28 +441,7 @@ static int dns_init_sockets() {
   return 0;
 }
 
-static void send_request(struct sockaddr *src_addr, socklen_t src_addrlen,
-                         ecs_addr_t ecs, uint16_t query_id, ssize_t len) {
-  // assign a new id
-  uint16_t new_id;
-  do {
-    struct timeval tv;
-    gettimeofday(&tv, 0);
-    int randombits = (tv.tv_sec << 8) ^ tv.tv_usec;
-    new_id = randombits & 0xffff;
-  } while (queue_lookup(new_id));
-
-  uint16_t ns_new_id = htons(new_id);
-  memcpy(global_buf, &ns_new_id, 2);
-
-  id_addr_t id_addr;
-  id_addr.id = new_id;
-  id_addr.old_id = query_id;
-  id_addr.addr = src_addr;
-  id_addr.addrlen = src_addrlen;
-  id_addr.is_chn = ecs.is_chn;
-  queue_add(id_addr);
-
+static void send_request(ecs_addr_t ecs, ssize_t len) {
   add_ecs_data(global_buf + len, &ecs.addrs, 32);
 
   if (-1 == sendto(remote_sock, global_buf, len + ECS_DATA_LEN, 0,
@@ -474,6 +452,7 @@ static void send_request(struct sockaddr *src_addr, socklen_t src_addrlen,
 static void dns_handle_local() {
   struct sockaddr *src_addr = malloc(sizeof(struct sockaddr));
   socklen_t src_addrlen = sizeof(struct sockaddr);
+  uint16_t query_id;
   ssize_t len;
   int i;
   int ended = 0;
@@ -485,6 +464,26 @@ static void dns_handle_local() {
       free(src_addr);
       return;
     }
+    // parse DNS query id
+    query_id = ns_msg_id(msg);
+    // assign a new id
+    uint16_t new_id;
+    do {
+      struct timeval tv;
+      gettimeofday(&tv, 0);
+      int randombits = (tv.tv_sec << 8) ^ tv.tv_usec;
+      new_id = randombits & 0xffff;
+    } while (queue_lookup(new_id));
+
+    uint16_t ns_new_id = htons(new_id);
+    memcpy(global_buf, &ns_new_id, 2);
+
+    id_addr_t id_addr;
+    id_addr.id = new_id;
+    id_addr.old_id = query_id;
+    id_addr.addr = src_addr;
+    id_addr.addrlen = src_addrlen;
+    queue_add(id_addr);
     // Set Additional RRs count
     if (*(global_buf + 11) == 1) {
       if (((*(global_buf + len - 1)) | (*(global_buf + len - 2))) == 0)
@@ -493,8 +492,7 @@ static void dns_handle_local() {
       (*(global_buf + 11))++;
 
     for (i = 0; i < ecs_list.entries; i++)
-      send_request(src_addr, src_addrlen, ecs_list.ecs_addrs[i],
-                   ns_msg_id(msg), len);
+      send_request(ecs_list.ecs_addrs[i], len);
   }
   else
     ERR("recvfrom");
@@ -506,7 +504,7 @@ static void dns_handle_remote() {
   uint16_t query_id;
   ssize_t len;
   const char *question_hostname;
-  int r;
+  int r, is_chn;
   ns_msg msg;
   len = recvfrom(remote_sock, global_buf, BUF_SIZE, 0, src_addr, &src_len);
   if (len > 0) {
@@ -523,9 +521,11 @@ static void dns_handle_remote() {
           inet_ntoa(((struct sockaddr_in *)src_addr)->sin_addr),
           htons(((struct sockaddr_in *)src_addr)->sin_port));
     }
-    if (check_result(global_buf, len)) {
+    is_chn = check_result(global_buf, len);
+    if (-1 == is_chn) {
       if (verbose)
         printf("Fake, drop\n");
+      free(src_addr);
       return;
     }
     id_addr_t *id_addr = queue_lookup(query_id);
@@ -533,7 +533,7 @@ static void dns_handle_remote() {
       id_addr->addr->sa_family = AF_INET;
       uint16_t ns_old_id = htons(id_addr->old_id);
       memcpy(global_buf, &ns_old_id, 2);
-      r = should_filter_query(msg, id_addr->is_chn);
+      r = should_filter_query(msg, is_chn);
       if (r == 0) {
         if (verbose)
           printf("pass\n");
@@ -560,11 +560,11 @@ static void dns_handle_remote() {
 }
 
 static void queue_add(id_addr_t id_addr) {
-  id_addr_queue_pos = (id_addr_queue_pos + 1) % ID_ADDR_QUEUE_LEN;
   // free next hole
   id_addr_t old_id_addr = id_addr_queue[id_addr_queue_pos];
   free(old_id_addr.addr);
   id_addr_queue[id_addr_queue_pos] = id_addr;
+  id_addr_queue_pos = (id_addr_queue_pos + 1) % ID_ADDR_QUEUE_LEN;
 }
 
 static id_addr_t *queue_lookup(uint16_t id) {
@@ -628,11 +628,9 @@ static int should_filter_query(ns_msg msg, int is_chn) {
       } else {
         return is_chn ? 1 : -1;
       }
-    } else if (type == ns_t_aaaa || type == ns_t_ptr) {
-      // if we've got an IPv6 result or a PTR result, pass
+    } else {
       if (verbose)
-        printf("IPv6 or PTR, ");
-      return 0;
+        printf("Non-IPv4, ");
     }
   }
   return 0;
@@ -745,13 +743,12 @@ static int resolve_ecs_addrs() {
 
 static void buffer_putuint8(char **buffer, uint8_t value) {
   **buffer = value;
-  *buffer += 1;
+  (*buffer)++;
 }
 
 static void buffer_putuint16(char **buffer, uint16_t value) {
-  (*buffer)[0] = (unsigned char)((value & 0xff00U) >> 8);
-  (*buffer)[1] = (unsigned char)(value & 0x00ffU);
-  *buffer += 2;
+  buffer_putuint8(buffer, (value & 0xff00U) >> 8);
+  buffer_putuint8(buffer, value & 0x00ffU);
 }
 
 static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint32_t mask) {
@@ -788,31 +785,31 @@ static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint32_t mask) {
 
 static int check_result(char *buf, size_t buflen) {
   int i;
-  struct in_addr *addr = malloc(sizeof(struct in_addr));
-  memcpy(addr, buf + buflen - 4, 4);
+  size_t addrl = sizeof(struct in_addr);
+  struct in_addr *addr = malloc(addrl);
+  memcpy(addr, buf + buflen - addrl, addrl);
   for (i = 0; i < ecs_list.entries; i++) {
     if (addr->s_addr == ecs_list.ecs_addrs[i].addrs.s_addr) {
       free(addr);
-      return 0;
+      return ecs_list.ecs_addrs[i].is_chn;
     }
   }
   free(addr);
-  return 1;
+  return -1;
 }
 
 static void usage() {
   printf("%s\n", "\
-usage: chinadns [-h] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CHNROUTE_FILE] [-s DNS] [-v] [-V]\n\
+usage: chinadns [-c CHNROUTE_FILE] [-e CLIENT_SUBNET]\n\
+       [-b BIND_ADDR] [-p BIND_PORT] [-s DNS] [-h] [-v] [-V]\n\
 Forward DNS requests.\n\
 \n\
   -c CHNROUTE_FILE      path to china route file\n\
-                        if not specified, CHNRoute will be turned\n\
-  -y DELAY_TIME         delay time for suspects, default: 0.3\n\
+  -y DELAY_TIME         delay time for foreign result, default: 0.3\n\
   -b BIND_ADDR          address that listens, default: 0.0.0.0\n\
   -p BIND_PORT          port that listens, default: 53\n\
-  -s DNS                DNS server to use, default: 8.8.8.\n\
-  -e CLIENT_SUBNET      EDNS Client Subnet.\n\
+  -s DNS                DNS server to use, default: 8.8.8.8\n\
+  -e ADDRs              set edns-client-subnet\n\
   -v                    verbose logging\n\
   -h                    show this help message and exit\n\
   -V                    print version and exit\n\

@@ -128,7 +128,7 @@ static float result_delay = 0.3f;
 static char *edns_client_ip = NULL;
 static ecs_list_t ecs_list;
 static int resolve_ecs_addrs();
-static void add_ecs_data(char *buf, struct in_addr *addr, uint32_t len);
+static void add_ecs_data(char *buf, struct in_addr *addr, uint8_t len);
 
 static int check_result(char *buf, size_t buflen);
 
@@ -161,8 +161,7 @@ static void usage(void);
 #ifdef DEBUG
 #define DLOG(s...) LOG(s)
 void __gcov_flush(void);
-static void gcov_handler(int signum)
-{
+static void gcov_handler(int signum) {
   __gcov_flush();
   exit(1);
 }
@@ -328,7 +327,6 @@ static int parse_chnroute() {
   char line_buf[32];
   char *line;
   size_t len = sizeof(line_buf);
-  ssize_t read;
   char net[32];
   chnroute_list.entries = 0;
   int i = 0;
@@ -455,7 +453,7 @@ static void dns_handle_local() {
   uint16_t query_id;
   ssize_t len;
   int i;
-  int ended = 0;
+  const char *question_hostname;
   ns_msg msg;
   len = recvfrom(local_sock, global_buf, BUF_SIZE, 0, src_addr, &src_addrlen);
   if (len > 0) {
@@ -466,6 +464,11 @@ static void dns_handle_local() {
     }
     // parse DNS query id
     query_id = ns_msg_id(msg);
+    if (verbose) {
+      question_hostname = hostname_from_question(msg);
+      if (question_hostname)
+        LOG("query %s\n", question_hostname);
+    }
     // assign a new id
     uint16_t new_id;
     do {
@@ -493,9 +496,10 @@ static void dns_handle_local() {
 
     for (i = 0; i < ecs_list.entries; i++)
       send_request(ecs_list.ecs_addrs[i], len);
-  }
-  else
+  } else {
     ERR("recvfrom");
+    free(src_addr);
+  }
 }
 
 static void dns_handle_remote() {
@@ -515,11 +519,10 @@ static void dns_handle_remote() {
     }
     // parse DNS query id
     query_id = ns_msg_id(msg);
-    question_hostname = hostname_from_question(msg);
-    if (question_hostname) {
-      LOG("response %s from %s:%d -> ", question_hostname,
-          inet_ntoa(((struct sockaddr_in *)src_addr)->sin_addr),
-          htons(((struct sockaddr_in *)src_addr)->sin_port));
+    if (verbose) {
+      question_hostname = hostname_from_question(msg);
+      if (question_hostname)
+        LOG("answer %s -> ", question_hostname);
     }
     is_chn = check_result(global_buf, len);
     if (-1 == is_chn) {
@@ -606,11 +609,12 @@ static const char *hostname_from_question(ns_msg msg) {
 static int should_filter_query(ns_msg msg, int is_chn) {
   ns_rr rr;
   int rrnum, rrmax;
-  void *r;
   rrmax = ns_msg_count(msg, ns_s_an);
-  printf("(%s) ", is_chn ? "C" : "F");
-  if (rrmax == 0)
-    printf("Empty, ");
+  if (verbose) {
+    printf("(%s) ", is_chn ? "C" : "F");
+    if (rrmax == 0)
+      printf("Empty, ");
+  }
   for (rrnum = 0; rrnum < rrmax; rrnum++) {
     if (local_ns_parserr(&msg, ns_s_an, rrnum, &rr)) {
       ERR("local_ns_parserr");
@@ -628,11 +632,10 @@ static int should_filter_query(ns_msg msg, int is_chn) {
       } else {
         return is_chn ? 1 : -1;
       }
-    } else {
-      if (verbose)
-        printf("Non-IPv4, ");
     }
   }
+  if (verbose && rrmax > 0)
+    printf("Non-IPv4, ");
   return 0;
 }
 
@@ -707,13 +710,9 @@ static void free_delay(int pos) {
 }
 
 static int resolve_ecs_addrs() {
-  struct addrinfo hints;
   char* token;
-  int r;
-  int i = 0;
   char *pch = strchr(edns_client_ip, ',');
-  int has_chn = 0;
-  int has_foreign = 0;
+  int i = 0, has_chn = 0, has_foreign = 0;
   ecs_list.entries = 1;
   while (pch != NULL) {
     ecs_list.entries++;
@@ -735,7 +734,7 @@ static int resolve_ecs_addrs() {
   }
   if (!(has_chn && has_foreign)) {
     VERR("You should have at least one Chinese Client Subnet and"
-        " one foreign Client Subnet\n");
+         " one foreign Client Subnet\n");
     return 1;
   }
   return 0;
@@ -751,7 +750,7 @@ static void buffer_putuint16(char **buffer, uint16_t value) {
   buffer_putuint8(buffer, value & 0x00ffU);
 }
 
-static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint32_t mask) {
+static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint8_t mask) {
   // Set Name: <Root>
   buffer_putuint8(&buf_ptr, 0);
   // Set Type: OPT (41)

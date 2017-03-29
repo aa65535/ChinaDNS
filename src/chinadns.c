@@ -128,7 +128,7 @@ static float result_delay = 0.3f;
 static char *edns_client_ip = NULL;
 static ecs_list_t ecs_list;
 static int resolve_ecs_addrs();
-static void add_ecs_data(char *buf, struct in_addr *addr, uint8_t len);
+static void add_ecs_data(char *buf, struct in_addr *addr, uint8_t mask);
 
 static int check_result(char *buf, size_t buflen);
 

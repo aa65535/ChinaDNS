@@ -55,7 +55,7 @@ typedef struct {
 
 typedef struct {
   struct in_addr net;
-  in_addr_t mask;
+  uint32_t mask;
 } net_mask_t;
 
 typedef struct {
@@ -122,7 +122,7 @@ static void free_delay(int pos);
 static int delay_queue_first = 0;
 // current position for last, used
 static int delay_queue_last = 0;
-static float result_delay = 0.3f;
+static float result_delay = 0.1f;
 
 #define ECS_DATA_LEN 23
 static char *edns_client_ip = NULL;
@@ -402,11 +402,12 @@ static int test_ip_in_list(struct in_addr ip, const net_list_t *netlist) {
 #endif
   }
 #ifdef DEBUG
-  DLOG("nets: %x <-> %x\n", ntohl(netlist->nets[l - 1].net.s_addr, ntohl(ip.s_addr));
+  DLOG("nets: %x <-> %x\n", ntohl(netlist->nets[l - 1].net.s_addr),
+       ntohl(ip.s_addr));
   DLOG("mask: %x\n", netlist->nets[l - 1].mask);
 #endif
   if (0 == l || (ntohl(ip.s_addr) > (ntohl(netlist->nets[l - 1].net.s_addr)
-      | netlist->nets[l - 1].mask))) {
+                                     | netlist->nets[l - 1].mask))) {
     return 0;
   }
   return 1;

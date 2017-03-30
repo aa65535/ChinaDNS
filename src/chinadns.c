@@ -169,6 +169,16 @@ static void gcov_handler(int signum) {
 #define DLOG(s...)
 #endif
 
+#define BUF_PUT8(p, v) do {                                         \
+  *p = v;                                                           \
+  p++;                                                              \
+} while (0)
+
+#define BUF_PUT16(p, v) do {                                        \
+  BUF_PUT8(p, (v & 0xff00) >> 8);                                   \
+  BUF_PUT8(p, v & 0x00ff);                                          \
+} while (0)
+
 int main(int argc, char **argv) {
   fd_set readset, errorset;
   int max_fd;
@@ -741,44 +751,34 @@ static int resolve_ecs_addrs() {
   return 0;
 }
 
-static void buffer_putuint8(char **buffer, uint8_t value) {
-  **buffer = value;
-  (*buffer)++;
-}
-
-static void buffer_putuint16(char **buffer, uint16_t value) {
-  buffer_putuint8(buffer, (value & 0xff00U) >> 8);
-  buffer_putuint8(buffer, value & 0x00ffU);
-}
-
 static void add_ecs_data(char *buf_ptr, struct in_addr *addr, uint8_t mask) {
   // Set Name: <Root>
-  buffer_putuint8(&buf_ptr, 0);
+  BUF_PUT8(buf_ptr, 0);
   // Set Type: OPT (41)
-  buffer_putuint16(&buf_ptr, 41);
+  BUF_PUT16(buf_ptr, 41);
   // Set UDP payload size: 4096
-  buffer_putuint16(&buf_ptr, 4096);
+  BUF_PUT16(buf_ptr, 4096);
   // Set Higher bits in extended RCODE: 0x00
-  buffer_putuint8(&buf_ptr, 0);
+  BUF_PUT8(buf_ptr, 0);
   // Set EDNS0 version: 0
-  buffer_putuint8(&buf_ptr, 0);
+  BUF_PUT8(buf_ptr, 0);
   // Set Z: 0x0000
-  buffer_putuint16(&buf_ptr, 0);
+  BUF_PUT16(buf_ptr, 0);
   // Set Data length: 12
-  buffer_putuint16(&buf_ptr, 12);
+  BUF_PUT16(buf_ptr, 12);
   // Set RData
   // The after things are in the example of <Client Subnet in DNS Requests>
   size_t addrl = (mask + 7) / 8;
   // Set Option Code: CSUBNET - Client subnet (8)
-  buffer_putuint16(&buf_ptr, 8);
+  BUF_PUT16(buf_ptr, 8);
   // Set Option Length
-  buffer_putuint16(&buf_ptr, 4 + addrl);
+  BUF_PUT16(buf_ptr, 4 + addrl);
   // Set Family: IPv4 (1)
-  buffer_putuint16(&buf_ptr, 1);
+  BUF_PUT16(buf_ptr, 1);
   // Set Source Netmask
-  buffer_putuint8(&buf_ptr, mask);
+  BUF_PUT8(buf_ptr, mask);
   // Set Scope Netmask: 0
-  buffer_putuint8(&buf_ptr, 0);
+  BUF_PUT8(buf_ptr, 0);
   // Set Client Subnet Information
   memcpy(buf_ptr, addr, addrl);
 }

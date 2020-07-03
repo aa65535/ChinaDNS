@@ -74,6 +74,8 @@ static char compression_buf[BUF_SIZE];
 static int verbose = 0;
 static int compression = 0;
 static int bidirectional = 0;
+static char *chn_dns_ip = NULL;
+static int sleep_ms = 4;
 
 #define CHN_DNS 0
 #define FOREIGN_DNS 1
@@ -265,7 +267,7 @@ static int setnonblock(int sock) {
 
 static int parse_args(int argc, char **argv) {
   int ch;
-  while ((ch = getopt(argc, argv, "hb:p:s:l:c:y:dmvV")) != -1) {
+  while ((ch = getopt(argc, argv, "hb:p:s:l:c:y:C:w:dmvV")) != -1) {
     switch (ch) {
       case 'h':
         usage();
@@ -300,6 +302,12 @@ static int parse_args(int argc, char **argv) {
       case 'V':
         printf("ChinaDNS %s\n", PACKAGE_VERSION);
         exit(0);
+      case 'w':
+        sleep_ms = abs(atoi(optarg));
+        break;
+      case 'C':
+        chn_dns_ip = strdup(optarg);
+        break;
       default:
         usage();
         exit(1);
@@ -438,12 +446,15 @@ static int test_dns_server_type(struct sockaddr *addr) {
               trusted_dns_list.ips, trusted_dns_list.entries,
               sizeof(struct in_addr), cmp_in_addr);
   if (r) {
+      printf(" %s - ", "TRUSTED_DNS" );
     return TRUSTED_DNS;
   } else {
     if (test_ip_in_list(((struct sockaddr_in *) addr)->sin_addr,
                         &chnroute_list)) {
+      printf(" %s - ", "CHN_DNS" );
       return CHN_DNS;
     } else {
+      printf(" %s - ", "FOREIGN_DNS" );
       return FOREIGN_DNS;
     }
   }
@@ -526,6 +537,8 @@ static int parse_chnroute() {
   while ((line = fgets(line_buf, len, fp))) {
     chnroute_list.entries++;
   }
+  if (chn_dns_ip)
+    chnroute_list.entries++;
 
   chnroute_list.nets = calloc(chnroute_list.entries, sizeof(net_mask_t));
   if (0 != fseek(fp, 0, SEEK_SET)) {
@@ -555,6 +568,13 @@ static int parse_chnroute() {
       return 1;
     }
     i++;
+  }
+  if (chn_dns_ip) {
+      chnroute_list.nets[i].mask = NETMASK_MIN;
+      if (0 == inet_aton(chn_dns_ip, &chnroute_list.nets[i].net)) {
+          VERR("invalid addr %s from chn_dns_ip\n", chn_dns_ip);
+          return 1;
+      }
   }
 
   qsort(chnroute_list.nets, chnroute_list.entries, sizeof(net_mask_t),
@@ -694,11 +714,16 @@ static void dns_handle_local() {
     }
     for (i = 0; i < dns_servers_len; i++) {
       switch (test_dns_server_type(dns_server_addrs[i].addr)) {
+        int type=TRUSTED_DNS;
         case CHN_DNS:
+          type=CHN_DNS;
         case TRUSTED_DNS:
+          if (type != CHN_DNS)
+            usleep(1000 * sleep_ms);
           send_request(dns_server_addrs[i], global_buf, len);
           break;
         case FOREIGN_DNS:
+          usleep(1000 * sleep_ms);
           if (ended)
             send_request(dns_server_addrs[i], compression_buf, len + 1);
           else if (!has_trusted_dns)
@@ -822,6 +847,7 @@ static int should_filter_query(ns_msg msg, struct sockaddr *dns_addr) {
     dns_is_chn = (CHN_DNS == test_dns_server_type(dns_addr));
     dns_is_foreign = !dns_is_chn;
   }
+
   rrmax = ns_msg_count(msg, ns_s_an);
   for (rrnum = 0; rrnum < rrmax; rrnum++) {
     if (local_ns_parserr(&msg, ns_s_an, rrnum, &rr)) {
@@ -964,6 +990,8 @@ Forward DNS requests.\n\
   -m                    use DNS compression pointer mutation\n\
                         (backlist and delaying would be disabled)\n\
   -v                    verbose logging\n\
+  -C                    specific one Chinese DNS\n\
+  -w                    milliseconds, sleep before  query for FOREIGN_DNS or TRUSTED_DNS\n\
   -h                    show this help message and exit\n\
   -V                    print version and exit\n\
 \n\
